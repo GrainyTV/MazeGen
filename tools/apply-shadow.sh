@@ -20,7 +20,7 @@ readarray -t entries < <(ls -1 "$frameDir")
 
 for entry in "${entries[@]}"
 do
-    magick "$frameDir/$entry" \( +clone -background "#4d4d51" -shadow 84x4+0+0 \) +swap -background none -layers merge +repage "$frameOutDir/$entry"
+    magick "$frameDir/$entry" \( +clone -background "#8a6048" -shadow 84x4+0+0 \) +swap -background none -layers merge +repage "$frameOutDir/$entry"
 done
 
 echo "Done! Applied shadow to x${#entries[@]} frames"

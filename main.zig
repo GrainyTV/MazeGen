@@ -5,8 +5,8 @@ const sdl = @cImport({
 });
 const Clock = std.Io.Clock;
 
-const WINDOW_WIDTH = 636;
-const WINDOW_HEIGHT = 132;
+const WINDOW_WIDTH = 516;
+const WINDOW_HEIGHT = 108;
 const CELL_SIZE = 12;
 
 const BlockKind = enum {
@@ -120,15 +120,15 @@ pub fn renderMaze(renderer: ?*sdl.SDL_Renderer, brickTextureSdl: [*c]sdl.SDL_Tex
         for (0..maxw) |x| {
             const tgt = sdl.SDL_FRect{ .x = @floatFromInt(x * CELL_SIZE), .y = @floatFromInt(y * CELL_SIZE), .w = CELL_SIZE, .h = CELL_SIZE };
 
-            if (fields[x][y] == .WALL) {
-                _ = sdl.SDL_RenderTexture(renderer, brickTextureSdl, null, @ptrCast(&tgt));
-            } else if (fields[x][y] == .PASSAGE) {
+            if (fields[x][y] == .PASSAGE) {
                 _ = sdl.SDL_SetRenderDrawColor(renderer, 167, 78, 72, 255);
                 _ = sdl.SDL_RenderFillRect(renderer, @ptrCast(&tgt));
             } else if (fields[x][y] == .AVAILABLE_NEIGHBOR) {
                 _ = sdl.SDL_RenderTexture(renderer, brickTextureSdl, null, @ptrCast(&tgt));
                 _ = sdl.SDL_SetRenderDrawColor(renderer, 213, 224, 56, 127);
                 _ = sdl.SDL_RenderFillRect(renderer, @ptrCast(&tgt));
+            } else {
+                _ = sdl.SDL_RenderTexture(renderer, brickTextureSdl, null, @ptrCast(&tgt));
             }
 
             if (x == active.x and y == active.y) {
@@ -139,11 +139,15 @@ pub fn renderMaze(renderer: ?*sdl.SDL_Renderer, brickTextureSdl: [*c]sdl.SDL_Tex
     }
 }
 
-pub fn pauseExecution(io: std.Io) void {
-    Clock.Duration.sleep(Clock.Duration{ .clock = .real, .raw = .fromMilliseconds(125) }, io) catch @panic("sleeperr");
+pub fn pauseExecutionExplicit(io: std.Io, ms: i64) void {
+    Clock.Duration.sleep(Clock.Duration{ .clock = .real, .raw = .fromMilliseconds(ms) }, io) catch @panic("sleeperr");
 }
 
-pub fn generatePrimMazeAsync(io: std.Io, comptime maxw: u32, comptime maxh: u32, activePos: *IVec2, fields: *[maxw][maxh]BlockKind, allocator: *std.mem.Allocator) void {
+pub fn pauseExecution(io: std.Io) void {
+    pauseExecutionExplicit(io, 125);
+}
+
+pub fn generatePrimMazeAsync(io: std.Io, comptime maxw: u32, comptime maxh: u32, activePos: *IVec2, fields: *[maxw][maxh]BlockKind, allocator: *std.mem.Allocator, animate: *bool) void {
     var neighbors = std.ArrayList(IVec2).initCapacity(allocator.*, maxw * maxh) catch @panic("oom");
 
     var xoshiro = std.Random.DefaultPrng.init(67);
@@ -154,6 +158,8 @@ pub fn generatePrimMazeAsync(io: std.Io, comptime maxw: u32, comptime maxh: u32,
             fields[x][y] = .WALL;
         }
     }
+
+    animate.* = true;
 
     // 1.) All wall render
     pauseExecution(io);
@@ -195,6 +201,10 @@ pub fn generatePrimMazeAsync(io: std.Io, comptime maxw: u32, comptime maxh: u32,
     // 6.) Final render
     activePos.* = .{ .x = -1, .y = -1 };
     pauseExecution(io);
+
+    // 7.) Extra delay at the end
+    pauseExecutionExplicit(io, 2000);
+    animate.* = false;
 }
 
 pub fn main(args: std.process.Init) void {
@@ -243,50 +253,57 @@ pub fn main(args: std.process.Init) void {
 
     var animateThread: std.Thread = undefined;
     var animatingFields: bool = false;
+    var enableMazeRender: bool = false;
     var frameCount: u32 = 0;
 
     while (isRunning) {
         while (sdl.SDL_PollEvent(&currentEvent)) {
-            switch (currentEvent.type) {
-                sdl.SDL_EVENT_KEY_DOWN => {
-                    switch (currentEvent.key.key) {
-                        sdl.SDLK_Q, sdl.SDLK_ESCAPE => isRunning = false,
-                        sdl.SDLK_SPACE => {
+            if (currentEvent.type == sdl.SDL_EVENT_KEY_DOWN) {
+                switch (currentEvent.key.key) {
+                    sdl.SDLK_Q, sdl.SDLK_ESCAPE => {
+                        isRunning = false;
+                    },
+                    sdl.SDLK_SPACE => {
+                        if (!enableMazeRender) {
+                            enableMazeRender = true;
+
                             std.Io.Dir.cwd().createDirPath(args.io, "frames") catch @panic("mkdirerr");
+
                             animateThread = std.Thread.spawn(
                                 .{},
                                 generatePrimMazeAsync,
-                                .{ args.io, cellCountHorizontal, cellCountVertical, &activePos, &fields, &allocator },
+                                .{ args.io, cellCountHorizontal, cellCountVertical, &activePos, &fields, &allocator, &animatingFields },
                             ) catch @panic("threaderr");
-                            animatingFields = true;
-                        },
-                        else => {},
-                    }
-                },
-                else => {},
+                        }
+                    },
+                    else => {},
+                }
             }
         }
 
         _ = sdl.SDL_SetRenderDrawColor(renderer, 133, 133, 133, 255);
         _ = sdl.SDL_RenderClear(renderer);
 
-        if (animatingFields) {
+        if (enableMazeRender) {
             renderMaze(renderer, brickTextureSdl, cellCountHorizontal, cellCountVertical, &fields, activePos);
+
+            if (animatingFields) {
+                //| You can use something like ffmpeg to merge the frames
+                //| FPS is refresh rate when vsync is ON
+                //| Delay is 1000ms / FPS, e.g. 7 (≈1000ms/144fps)
+
+                //| ffmpeg -framerate 144 -i frames/frame_%05d.bmp -default_delay 7 -ignore_loop false -loop 0 -lossless 1 maze.webp
+
+                const frame = sdl.SDL_RenderReadPixels(renderer, null);
+                defer sdl.SDL_DestroySurface(frame);
+
+                const outPath: [:0]const u8 = std.fmt.allocPrintSentinel(allocator, "frames/frame_{d:0>5}.bmp", .{frameCount}, 0) catch @panic("oom");
+                _ = sdl.SDL_SaveBMP(frame, outPath.ptr);
+
+                frameCount += 1;
+            }
         }
 
         _ = sdl.SDL_RenderPresent(renderer);
-
-        if (animatingFields) {
-            //| You can then use ffmpeg to merge the frames
-            //| e.g. ffmpeg -framerate 144 -i frames/frame_%05d.bmp -default_delay 7 -ignore_loop false -loop 0 -lossless 1 maze.webp
-
-            const frame = sdl.SDL_RenderReadPixels(renderer, null);
-            defer sdl.SDL_DestroySurface(frame);
-
-            const outPath: [:0]const u8 = std.fmt.allocPrintSentinel(allocator, "frames/frame_{d:0>5}.bmp", .{frameCount}, 0) catch @panic("oom");
-            _ = sdl.SDL_SaveBMP(frame, outPath.ptr);
-
-            frameCount += 1;
-        }
     }
 }
