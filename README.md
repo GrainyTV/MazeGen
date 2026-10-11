@@ -37,4 +37,5 @@ pacman -S sdl3
 By default the application will default to an empty gray window.
 
 <kbd>Space</kbd> starts the animation and outputs the frames in cwd
+
 <kbd>Esc</kbd> or <kbd>Q</kbd> terminates the application

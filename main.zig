@@ -5,7 +5,7 @@ const sdl = @cImport({
 });
 const Clock = std.Io.Clock;
 
-const WINDOW_WIDTH = 516;
+const WINDOW_WIDTH = 396;
 const WINDOW_HEIGHT = 108;
 const CELL_SIZE = 12;
 
@@ -20,50 +20,60 @@ const IVec2 = struct {
     y: i32,
 };
 
-pub fn fatal(comptime fmt: []const u8, args: anytype) void {
-    std.debug.print(fmt, args);
+const Neighbor = struct {
+    pos: IVec2,
+    distance: u32,
+};
+
+pub fn fatal(comptime condition: []const u8) noreturn {
+    std.debug.print("[ERROR] {s}\n", .{condition});
     std.debug.print("==> {s}\n", .{sdl.SDL_GetError()});
     std.process.exit(1);
 }
 
-pub fn registerValidNeighbors(comptime maxw: u32, comptime maxh: u32, pos: IVec2, fields: *[maxw][maxh]BlockKind, neighbors: *std.ArrayList(IVec2)) void {
-    var x: i32 = undefined;
-    var y: i32 = undefined;
+pub fn registerValidNeighbor(comptime maxw: u32, comptime maxh: u32, fields: *[maxw][maxh]BlockKind, neighbors: *std.ArrayList(Neighbor), x: i32, y: i32) void {
+    if (x >= 0 and y >= 0 and x < maxw and y < maxh) {
+        const xu: usize = @intCast(x);
+        const yu: usize = @intCast(y);
 
-    //| LEFT
-    x = pos.x - 2;
-    y = pos.y;
+        if (fields[xu][yu] == .WALL) {
+            neighbors.appendAssumeCapacity(.{ .pos = IVec2{ .x = x, .y = y }, .distance = 0 });
+            fields[xu][yu] = .AVAILABLE_NEIGHBOR;
+        }
+    }
+}
 
-    if (x >= 0 and fields[@intCast(x)][@intCast(y)] == .WALL) {
-        neighbors.appendAssumeCapacity(IVec2{ .x = x, .y = y });
-        fields[@intCast(x)][@intCast(y)] = .AVAILABLE_NEIGHBOR;
+pub fn registerValidNeighbors(comptime maxw: u32, comptime maxh: u32, pos: IVec2, fields: *[maxw][maxh]BlockKind, neighbors: *std.ArrayList(Neighbor)) void {
+    registerValidNeighbor(maxw, maxh, fields, neighbors, pos.x - 2, pos.y);
+    registerValidNeighbor(maxw, maxh, fields, neighbors, pos.x + 2, pos.y);
+    registerValidNeighbor(maxw, maxh, fields, neighbors, pos.x, pos.y - 2);
+    registerValidNeighbor(maxw, maxh, fields, neighbors, pos.x, pos.y + 2);
+}
+
+pub fn applyDistancesReturnImmediateNeighbors(active: IVec2, neighbors: *std.ArrayList(Neighbor)) usize {
+    var cnt: usize = 0;
+
+    for (0..neighbors.items.len) |i| {
+        const distance = @abs(active.x - neighbors.items[i].pos.x) + @abs(active.y - neighbors.items[i].pos.y);
+        neighbors.items[i].distance = distance;
+
+        if (distance == 2) {
+            cnt += 1;
+        }
     }
 
-    //| RIGHT
-    x = pos.x + 2;
-    y = pos.y;
+    return cnt;
+}
 
-    if (x < maxw and fields[@intCast(x)][@intCast(y)] == .WALL) {
-        neighbors.appendAssumeCapacity(IVec2{ .x = x, .y = y });
-        fields[@intCast(x)][@intCast(y)] = .AVAILABLE_NEIGHBOR;
-    }
-
-    //| BOTTOM
-    x = pos.x;
-    y = pos.y - 2;
-
-    if (y >= 0 and fields[@intCast(x)][@intCast(y)] == .WALL) {
-        neighbors.appendAssumeCapacity(IVec2{ .x = x, .y = y });
-        fields[@intCast(x)][@intCast(y)] = .AVAILABLE_NEIGHBOR;
-    }
-
-    //| TOP
-    x = pos.x;
-    y = pos.y + 2;
-
-    if (y < maxh and fields[@intCast(x)][@intCast(y)] == .WALL) {
-        neighbors.appendAssumeCapacity(IVec2{ .x = x, .y = y });
-        fields[@intCast(x)][@intCast(y)] = .AVAILABLE_NEIGHBOR;
+pub fn sortNeighborsByDistance(neighbors: *std.ArrayList(Neighbor)) void {
+    for (0..neighbors.items.len) |i| {
+        for ((i + 1)..neighbors.items.len) |j| {
+            if (neighbors.items[i].distance > neighbors.items[j].distance) {
+                const tmp = neighbors.items[i];
+                neighbors.items[i] = neighbors.items[j];
+                neighbors.items[j] = tmp;
+            }
+        }
     }
 }
 
@@ -116,24 +126,27 @@ pub fn rollConnectorPassage(comptime maxw: u32, comptime maxh: u32, pos: IVec2, 
 }
 
 pub fn renderMaze(renderer: ?*sdl.SDL_Renderer, brickTextureSdl: [*c]sdl.SDL_Texture, comptime maxw: u32, comptime maxh: u32, fields: *[maxw][maxh]BlockKind, active: IVec2) void {
+    const YELLOW_MARKER = sdl.SDL_Color{ .r = 213, .g = 224, .b = 56, .a = 127 };
+    const PURPLE_MARKER = sdl.SDL_Color{ .r = 134, .g = 56, .b = 224, .a = 187 };
+    const BROWN_PASSAGE = sdl.SDL_Color{ .r = 167, .g = 78, .b = 72, .a = 255 };
+
     for (0..maxh) |y| {
         for (0..maxw) |x| {
             const tgt = sdl.SDL_FRect{ .x = @floatFromInt(x * CELL_SIZE), .y = @floatFromInt(y * CELL_SIZE), .w = CELL_SIZE, .h = CELL_SIZE };
 
             if (fields[x][y] == .PASSAGE) {
-                _ = sdl.SDL_SetRenderDrawColor(renderer, 167, 78, 72, 255);
-                _ = sdl.SDL_RenderFillRect(renderer, @ptrCast(&tgt));
-            } else if (fields[x][y] == .AVAILABLE_NEIGHBOR) {
-                _ = sdl.SDL_RenderTexture(renderer, brickTextureSdl, null, @ptrCast(&tgt));
-                _ = sdl.SDL_SetRenderDrawColor(renderer, 213, 224, 56, 127);
+                _ = sdl.SDL_SetRenderDrawColor(renderer, BROWN_PASSAGE.r, BROWN_PASSAGE.g, BROWN_PASSAGE.b, BROWN_PASSAGE.a);
                 _ = sdl.SDL_RenderFillRect(renderer, @ptrCast(&tgt));
             } else {
                 _ = sdl.SDL_RenderTexture(renderer, brickTextureSdl, null, @ptrCast(&tgt));
-            }
 
-            if (x == active.x and y == active.y) {
-                _ = sdl.SDL_SetRenderDrawColor(renderer, 134, 56, 224, 187);
-                _ = sdl.SDL_RenderFillRect(renderer, @ptrCast(&tgt));
+                if (x == active.x and y == active.y) {
+                    _ = sdl.SDL_SetRenderDrawColor(renderer, PURPLE_MARKER.r, PURPLE_MARKER.g, PURPLE_MARKER.b, PURPLE_MARKER.a);
+                    _ = sdl.SDL_RenderFillRect(renderer, @ptrCast(&tgt));
+                } else if (fields[x][y] == .AVAILABLE_NEIGHBOR) {
+                    _ = sdl.SDL_SetRenderDrawColor(renderer, YELLOW_MARKER.r, YELLOW_MARKER.g, YELLOW_MARKER.b, YELLOW_MARKER.a);
+                    _ = sdl.SDL_RenderFillRect(renderer, @ptrCast(&tgt));
+                }
             }
         }
     }
@@ -148,9 +161,9 @@ pub fn pauseExecution(io: std.Io) void {
 }
 
 pub fn generatePrimMazeAsync(io: std.Io, comptime maxw: u32, comptime maxh: u32, activePos: *IVec2, fields: *[maxw][maxh]BlockKind, allocator: *std.mem.Allocator, animate: *bool) void {
-    var neighbors = std.ArrayList(IVec2).initCapacity(allocator.*, maxw * maxh) catch @panic("oom");
+    var neighbors = std.ArrayList(Neighbor).initCapacity(allocator.*, maxw * maxh) catch @panic("oom");
 
-    var xoshiro = std.Random.DefaultPrng.init(67);
+    var xoshiro = std.Random.DefaultPrng.init(69420);
     const rnd = xoshiro.random();
 
     for (0..maxh) |y| {
@@ -180,11 +193,20 @@ pub fn generatePrimMazeAsync(io: std.Io, comptime maxw: u32, comptime maxh: u32,
     pauseExecution(io);
 
     while (neighbors.items.len > 0) {
-        const idx = rnd.uintLessThan(usize, neighbors.items.len);
+        const nextToCount = applyDistancesReturnImmediateNeighbors(activePos.*, &neighbors);
+
+        if (nextToCount > 0) {
+            //| If there are available neighbors right next to our position (in Manhattan distance)
+            //| we choose from those.
+            //| Otherwise we may pick any available neighbor.
+            sortNeighborsByDistance(&neighbors);
+        }
+
+        const idx = if (nextToCount > 0) rnd.uintLessThan(usize, nextToCount) else rnd.uintLessThan(usize, neighbors.items.len);
 
         fields[@intCast(activePos.x)][@intCast(activePos.y)] = .PASSAGE;
         previousPos = activePos.*;
-        activePos.* = neighbors.items[idx];
+        activePos.* = neighbors.items[idx].pos;
 
         const connectorPos = rollConnectorPassage(maxw, maxh, activePos.*, &rnd, fields);
         fields[@intCast(connectorPos.x)][@intCast(connectorPos.y)] = .PASSAGE;
@@ -209,20 +231,24 @@ pub fn generatePrimMazeAsync(io: std.Io, comptime maxw: u32, comptime maxh: u32,
 
 pub fn main(args: std.process.Init) void {
     if (!sdl.SDL_Init(sdl.SDL_INIT_VIDEO | sdl.SDL_INIT_EVENTS)) {
-        fatal("Failed to initialize SDL3\n", .{});
+        fatal("Failed to initialize SDL3");
     }
 
     const window = sdl.SDL_CreateWindow("MazeGen", WINDOW_WIDTH, WINDOW_HEIGHT, sdl.SDL_WINDOW_VULKAN);
 
     if (window == null) {
-        fatal("Failed to create window\n", .{});
+        fatal("Failed to create SDL3 window");
     }
 
     const renderer = sdl.SDL_CreateRenderer(window, null);
     const toggleVsync = sdl.SDL_SetRenderVSync(renderer, 1);
 
-    if (renderer == null or !toggleVsync) {
-        fatal("Failed to create renderer or enable vsync\n", .{});
+    if (renderer == null) {
+        fatal("Failed to create SDL3 renderer");
+    }
+
+    if (!toggleVsync) {
+        fatal("Failed to enable vsync");
     }
 
     _ = sdl.SDL_SetRenderDrawBlendMode(renderer, sdl.SDL_BLENDMODE_BLEND);
@@ -234,7 +260,7 @@ pub fn main(args: std.process.Init) void {
     defer sdl.SDL_DestroyTexture(brickTextureSdl);
 
     if (brickTextureSdl == null) {
-        fatal("Failed to create brick texture\n", .{});
+        fatal("Failed to create brick texture");
     }
 
     const cellCountHorizontal = WINDOW_WIDTH / CELL_SIZE;
@@ -291,7 +317,7 @@ pub fn main(args: std.process.Init) void {
                 //| You can use something like ffmpeg to merge the frames
                 //| FPS is refresh rate when vsync is ON
                 //| Delay is 1000ms / FPS, e.g. 7 (≈1000ms/144fps)
-
+                //| ---
                 //| ffmpeg -framerate 144 -i frames/frame_%05d.bmp -default_delay 7 -ignore_loop false -loop 0 -lossless 1 maze.webp
 
                 const frame = sdl.SDL_RenderReadPixels(renderer, null);
