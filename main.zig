@@ -77,51 +77,38 @@ pub fn sortNeighborsByDistance(neighbors: *std.ArrayList(Neighbor)) void {
     }
 }
 
-pub fn rollConnectorPassage(comptime maxw: u32, comptime maxh: u32, pos: IVec2, rnd: *const std.Random, fields: *[maxw][maxh]BlockKind) IVec2 {
+pub fn isConnectionUsable(comptime maxw: u32, comptime maxh: u32, fields: *[maxw][maxh]BlockKind, buffer: *[4]IVec2, count: usize, x: i32, y: i32) u1 {
+    if (x >= 0 and y >= 0 and x < maxw and y < maxh) {
+        const xu: usize = @intCast(x);
+        const yu: usize = @intCast(y);
+
+        if (fields[xu][yu] == .PASSAGE) {
+            buffer[count] = IVec2{ .x = x, .y = y };
+            return 1;
+        }
+    }
+
+    return 0;
+}
+
+pub fn selectConnection(comptime maxw: u32, comptime maxh: u32, pos: IVec2, rnd: *const std.Random, fields: *[maxw][maxh]BlockKind) IVec2 {
+    var buffer: [4]IVec2 = undefined;
     var cnt: usize = 0;
-    var buf: [4]IVec2 = undefined;
 
-    var x: i32 = undefined;
-    var y: i32 = undefined;
+    cnt += isConnectionUsable(maxw, maxh, fields, &buffer, cnt, pos.x - 2, pos.y);
+    cnt += isConnectionUsable(maxw, maxh, fields, &buffer, cnt, pos.x + 2, pos.y);
+    cnt += isConnectionUsable(maxw, maxh, fields, &buffer, cnt, pos.x, pos.y - 2);
+    cnt += isConnectionUsable(maxw, maxh, fields, &buffer, cnt, pos.x, pos.y + 2);
 
-    x = pos.x - 2;
-    y = pos.y;
-
-    if (x >= 0 and fields[@intCast(x)][@intCast(y)] == .PASSAGE) {
-        buf[cnt] = IVec2{ .x = x, .y = y };
-        cnt += 1;
-    }
-
-    x = pos.x + 2;
-    y = pos.y;
-
-    if (x < maxw and fields[@intCast(x)][@intCast(y)] == .PASSAGE) {
-        buf[cnt] = IVec2{ .x = x, .y = y };
-        cnt += 1;
-    }
-
-    x = pos.x;
-    y = pos.y - 2;
-
-    if (y >= 0 and fields[@intCast(x)][@intCast(y)] == .PASSAGE) {
-        buf[cnt] = IVec2{ .x = x, .y = y };
-        cnt += 1;
-    }
-
-    x = pos.x;
-    y = pos.y + 2;
-
-    if (y < maxh and fields[@intCast(x)][@intCast(y)] == .PASSAGE) {
-        buf[cnt] = IVec2{ .x = x, .y = y };
-        cnt += 1;
-    }
-
-    std.debug.assert(cnt > 0); // Cannot connect if no passages are found, at least one is needed each time
+    //| Cannot connect if no passages are found
+    //| AT LEAST one is needed each time!
+    //| ---
+    std.debug.assert(cnt > 0);
     const idx = rnd.uintLessThan(usize, cnt);
 
     return .{
-        .x = (pos.x + buf[idx].x) >> 1,
-        .y = (pos.y + buf[idx].y) >> 1,
+        .x = (pos.x + buffer[idx].x) >> 1,
+        .y = (pos.y + buffer[idx].y) >> 1,
     };
 }
 
@@ -208,7 +195,7 @@ pub fn generatePrimMazeAsync(io: std.Io, comptime maxw: u32, comptime maxh: u32,
         previousPos = activePos.*;
         activePos.* = neighbors.items[idx].pos;
 
-        const connectorPos = rollConnectorPassage(maxw, maxh, activePos.*, &rnd, fields);
+        const connectorPos = selectConnection(maxw, maxh, activePos.*, &rnd, fields);
         fields[@intCast(connectorPos.x)][@intCast(connectorPos.y)] = .PASSAGE;
 
         // 5.) Actual changes render
@@ -241,17 +228,21 @@ pub fn main(args: std.process.Init) void {
     }
 
     const renderer = sdl.SDL_CreateRenderer(window, null);
-    const toggleVsync = sdl.SDL_SetRenderVSync(renderer, 1);
 
     if (renderer == null) {
         fatal("Failed to create SDL3 renderer");
     }
 
+    const toggleVsync = sdl.SDL_SetRenderVSync(renderer, 1);
+    const toggleBlending = sdl.SDL_SetRenderDrawBlendMode(renderer, sdl.SDL_BLENDMODE_BLEND);
+
     if (!toggleVsync) {
         fatal("Failed to enable vsync");
     }
 
-    _ = sdl.SDL_SetRenderDrawBlendMode(renderer, sdl.SDL_BLENDMODE_BLEND);
+    if (!toggleBlending) {
+        fatal("Failed to enable blending");
+    }
 
     const brickSurfaceSdl = sdl.SDL_LoadBMP_IO(sdl.SDL_IOFromConstMem(&texture.BrickDataBMP, texture.BrickDataBMP.len), true);
     defer sdl.SDL_DestroySurface(brickSurfaceSdl);
